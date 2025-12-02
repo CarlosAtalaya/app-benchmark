@@ -106,3 +106,23 @@ Debe ser la carpeta con las imagenes y los json dentro, contenida en la misma ru
 Tareas a Ejecutar:
 
 Indicamos que tareas queremos analizar. Al final del proceso se generan los resportes por modelo en la carpeta "reportes"
+
+## Nueva Funcionalidad: RAG Multimodal (Retrieval-Augmented Generation)
+
+Esta versión introduce un pipeline de Generación Aumentada por Recuperación (RAG) que potencia la capacidad del modelo VLM proporcionándole "memoria visual" de casos históricos similares.
+
+### Funcionamiento de la Arquitectura RAG
+
+El sistema no se limita a pasar la imagen al modelo. Antes de la inferencia, ejecuta un pipeline de visión computacional avanzado:
+
+1.  **Segmentación Semántica (SAM 3)**
+    Utiliza el modelo Segment Anything Model 3 para generar una máscara precisa del vehículo, eliminando el "ruido" del fondo (calles, otros coches, personas) que suele confundir a los modelos generales.
+
+2.  **Análisis Granular (Grid Crops)**
+    La imagen limpia se divide en una rejilla de recortes de alta resolución (336x336px). Esto permite detectar micro-daños (arañazos leves, piquetes) que se perderían al redimensionar la imagen completa.
+
+3.  **Búsqueda Vectorial (MetaCLIP + FAISS)**
+    Cada recorte se convierte en un vector matemático (embedding) utilizando MetaCLIP. El sistema busca en una base de datos vectorial local (`vector_indices`) casos históricos visualmente similares (ej: "arañazo en parachoques blanco").
+
+4.  **Inyección de Contexto**
+    Si se encuentran similitudes con alta confianza, se construye un resumen textual (ej: "Referencia visual: Se han detectado patrones compatibles con 'Abolladura leve' en la aleta delantera con un 85% de similitud"). Este contexto se inyecta dinámicamente en el prompt del usuario, guiando al VLM para que su respuesta sea más técnica y precisa.
