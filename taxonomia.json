@@ -1,0 +1,26 @@
+{
+  "Parts": [
+    "Front Left Corner",
+    "Front",
+    "Front Right Corner",
+    "Rear Left Corner",
+    "Rear",
+    "Rear Right Corner",
+    "Front Left Side",
+    "Rear Left Side",
+    "Front Right Side",
+    "Rear Right Side",
+    "None"
+  ],
+  "Common damages": [
+    "Scratch",
+    "Dent",
+    "Degraded varnish",
+    "Crack",
+    "Fractured part",
+    "Missing part",
+    "Deviated part",
+    "No damage",
+    "Unknown"
+]
+}

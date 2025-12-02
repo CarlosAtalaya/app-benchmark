@@ -1,0 +1,27 @@
+{
+    "Hallucination": [
+        {
+            "ground_truth": "No"
+        }
+    ],
+    "hF1": [
+        {
+            "ground_truth": [
+                {
+                    "damage": "No damage",
+                    "part": "None"
+                }
+            ]
+        }
+    ],
+    "PDS": [
+        {
+            "ground_truth": [
+                {
+                    "damage": "No damage",
+                    "part": "None"
+                }
+            ]
+        }
+    ]
+}

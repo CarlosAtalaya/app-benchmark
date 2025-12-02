@@ -1,0 +1,67 @@
+version: '3.8'
+
+# --- CONFIGURACIONES COMUNES ---
+
+x-common-volumes: &common-volumes
+  - ./config.yaml:/app/config.yaml
+  - ./taxonomia.json:/app/taxonomia.json
+  - ./prompts.json:/app/prompts.json
+  - ./reportes:/app/reportes
+  - ./imagenes:/app/imagenes
+
+x-common-environment: &common-environment
+  - PYTHONUNBUFFERED=1
+  - NVIDIA_VISIBLE_DEVICES=all
+  - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+  - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+  - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+
+x-common-extra-hosts: &common-extra-hosts
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+# Esta es la pieza mágica para activar la GPU
+x-gpu-deploy: &gpu-deploy
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+# --- SERVICIOS ---
+
+services:
+  main:
+    build: .
+    image: benchmarkmapfrelite:1.0
+    container_name: mapfre_main
+    volumes: *common-volumes 
+    environment: *common-environment 
+    # Corrección: Fusionamos ambas configuraciones en una sola línea
+    <<: [*common-extra-hosts, *gpu-deploy]
+    command: python main.py
+
+  run_evaluations:
+    build: .
+    image: benchmarkmapfrelite:1.0
+    container_name: mapfre_run_evaluations
+    volumes: *common-volumes
+    environment: *common-environment
+    # Corrección: Fusionamos ambas configuraciones en una sola línea
+    <<: [*common-extra-hosts, *gpu-deploy]
+    command: python run_evaluations.py
+
+  front:
+    build: .
+    image: benchmarkmapfrelite:1.0
+    container_name: mapfre_front
+    volumes: *common-volumes
+    environment: *common-environment
+    # Corrección: Fusionamos ambas configuraciones en una sola línea
+    <<: [*common-extra-hosts, *gpu-deploy]
+    command: streamlit run front.py --server.port 8502 --server.address 0.0.0.0 --server.enableCORS false --server.enableXsrfProtection false
+    ports:
+      - "8502:8502"

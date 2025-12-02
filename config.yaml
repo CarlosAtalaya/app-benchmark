@@ -1,0 +1,31 @@
+directorio_imagenes: imagenes
+gemini_config:
+  api_key: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+gestor: ollama
+hiperparametros:
+  temperature: 0.0
+  top_k: 30
+lm_studio_config:
+  endpoint: http://host.docker.internal:1234/v1/chat/completions
+modelo_a_evaluar: qwen3-vl:8b-instruct-q8_0
+modelos_a_evaluar_en_lote:
+- qwen3-vl:8b-instruct-q8_0
+nova_config:
+  api_key: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+ollama_config:
+  endpoint: http://host.docker.internal:11434/api/generate
+openai_config:
+  api_key: sk-...
+output_file: resultados_evaluacion.json
+prompts_file: prompts.json
+qwen_config:
+  endpoint: http://host.docker.internal:8001/qwen3/chat/completions
+s3_config:
+  input_bucket: vda-benchmark-datasets-colombia-peru-espana
+  input_prefix: dataset_prueba_2/
+  output_bucket: vda-benchmark-datasets-colombia-peru-espana
+  output_prefix: reportes_dataset_prueba_2/
+tareas_a_ejecutar:
+- Hallucination
+vllm_config:
+  endpoint: http://host.docker.internal:8000/v1/chat/completions

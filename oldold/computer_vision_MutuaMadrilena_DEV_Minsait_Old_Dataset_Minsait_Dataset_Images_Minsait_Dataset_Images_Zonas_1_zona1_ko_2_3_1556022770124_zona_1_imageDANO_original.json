@@ -1,0 +1,43 @@
+{
+  "hF1": [
+    {
+      "prompt": "You are an expert vehicle damage appraiser. Analyze the attached image and classify the damages you see. Return a JSON object or a list of JSON objects for each type of damage you find with this structure (no additional text, no explanations):\n{\n\"damage\": \"VALUE_FROM_THE_DAMAGE_LIST\",\n\"part\": \"VALUE_FROM_THE_PARTS_LIST\",\n\"severity\": \"VALUE_FROM_THE_SEVERITY_LIST\"\n}\nIf you do not observe any damage in the image, respond only with the text 'No damage'.\nIf you cannot determine the damage, the part, or the severity, respond only with the text 'I don't know'.\nUse exclusively the values from each list for the JSON:\nValid damages: \"Scratch\",\"Dent\",\"Degraded varnish\",\"Crack\",\"Fractured part\",\"Missing part\",\"Deviated part\",\"No damage\",\"Unknown\"\nValid parts: \"Front bumper\",\"Rear bumper\",\"Hood\",\"Tailgate\",\"Front left door\",\"Front right door\",\"Rear right door\",\"Rear left door\",\"Front left fender\",\"Front right fender\",\"Rear left fender\",\"Rear right fender\",\"None\"\nValid severities: \"Minor\",\"Severe\"\nDo not invent values outside of the lists. The only allowed output is the JSON object or, in the indicated cases, the text 'No damage' or 'I don't know'.",
+      "ground_truth": [
+        {
+          "damage": "Deviated part",
+          "part": "Front bumper",
+          "severity": "Minor"
+        },
+        {
+          "damage": "Scratch",
+          "part": "Front bumper",
+          "severity": "Minor"
+        }
+      ]
+    }
+  ],
+  "Hallucination": [
+    {
+      "prompt": "Looking only at the image, is there damage to the vehicle? Answer only with 'Yes' or 'No'.",
+      "ground_truth": "Yes"
+    }
+  ],
+  "PDS": [
+    {
+      "prompt": "You are an expert vehicle damage appraiser. Analyze the attached image and classify the damages you see. Return a JSON object or a list of JSON objects for each type of damage you find with this structure (no additional text, no explanations):\n{\n\"damage\": \"VALUE_FROM_THE_DAMAGE_LIST\",\n\"part\": \"VALUE_FROM_THE_PARTS_LIST\",\n\"severity\": \"VALUE_FROM_THE_SEVERITY_LIST\"\n}\nIf you do not observe any damage in the image, respond only with the text 'No damage'.\nIf you cannot determine the damage, the part, or the severity, respond only with the text 'I don't know'.\nUse exclusively the values from each list for the JSON:\nValid damages: \"Scratch\",\"Dent\",\"Degraded varnish\",\"Crack\",\"Fractured part\",\"Missing part\",\"Deviated part\",\"No damage\",\"Unknown\"\nValid parts: \"Front bumper\",\"Rear bumper\",\"Hood\",\"Tailgate\",\"Front left door\",\"Front right door\",\"Rear right door\",\"Rear left door\",\"Front left fender\",\"Front right fender\",\"Rear left fender\",\"Rear right fender\",\"None\"\nValid severities: \"Minor\",\"Severe\"\nDo not invent values outside of the lists. The only allowed output is the JSON object or, in the indicated cases, the text 'No damage' or 'I don't know'.",
+      "ground_truth": [
+        {
+          "damage": "Deviated part",
+          "part": "Front bumper",
+          "severity": "Minor"
+        },
+        {
+          "damage": "Scratch",
+          "part": "Front bumper",
+          "severity": "Minor"
+        }
+      ],
+      "nivel": 3
+    }
+  ]
+}
