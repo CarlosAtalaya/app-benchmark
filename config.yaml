@@ -29,3 +29,24 @@ tareas_a_ejecutar:
 - Hallucination
 vllm_config:
   endpoint: http://host.docker.internal:8000/v1/chat/completions
+
+# ==========================================
+# CONFIGURACIÓN RAG MULTIMODAL
+# ==========================================
+rag_config:
+  enabled: true
+  
+  # RUTAS ACTUALIZADAS SEGÚN TU ESTRUCTURA
+  index_path: "vector_indices/metaclip_unified_index"  # Apunta a la carpeta contenedora
+  index_filename: "index_metaclip_unified.faiss"
+  metadata_filename: "metadata_unified.pkl"
+  config_filename: "index_config.json"                 # Añadimos este fichero que mencionas
+  
+  # Parámetros de Inferencia
+  top_k_per_crop: 3
+  similarity_threshold: 0.60
+  enable_taxonomy_normalization: true
+
+sam3_config:
+  bpe_path: "assets/bpe_simple_vocab_16e6.txt.gz"
+  text_prompt: "car"

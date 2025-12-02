@@ -2,244 +2,273 @@
 import os
 import json
 import time
-#import cv2
+import sys
+import cv2 
 
+# --- Importaciones del proyecto original ---
 from utils import (
     cargar_configuracion,
-    construir_arbol_taxonomia,
-    aplicar_y_codificar_distorsiones,
     list_images_by_prefix,
     download_image_to_tmp,
     load_ground_truth,
     put_json_s3,
-    image_file_to_b64
+    image_file_to_b64,
+    aplicar_y_codificar_distorsiones,
+    construir_arbol_taxonomia
 )
 
 from models import (
     consultar_modelo_vlm,
-    consultar_modelo_text_only,
     normalizar_respuesta
 )
 from metrics import despachar_calculo_metricas
 from reporting import imprimir_resumen_consola, generar_reporte_final
 
+# --- Importación Robusta del RAG ---
+try:
+    from rag.inference_pipeline import MultimodalRAGPipeline
+    RAG_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️  Módulo RAG no disponible o dependencias faltantes: {e}")
+    print("⚠️  Se ejecutará SIN contexto RAG.")
+    RAG_AVAILABLE = False
+
 
 CONFIG_FILE = "config.yaml"
 
 def main():
-    print("--- INICIANDO PROCESO DE EVALUACIÓN MULTI-TAREA ---")
+    print("--- INICIANDO PROCESO DE EVALUACIÓN CON RAG MULTIMODAL ---")
+    
+    # 1. Cargar Configuración
     config = cargar_configuracion(CONFIG_FILE)
     if not config:
-        print("Falta el archivo de configuración. Finalizando.")
+        print("Error: No se pudo cargar config.yaml.")
         return
     
     s3_config = config.get("s3_config")
-    if not s3_config or not all(k in s3_config for k in ["input_bucket", "input_prefix", "output_bucket"]):
-        print("Error: Falta la sección 's3_config' o alguna de sus claves en el config. Finalizando.")
-        return
-    
-    PROMPTS_FILE = config.get("prompts_file")
-    if not PROMPTS_FILE or not os.path.exists(PROMPTS_FILE):
-        print(f"Error: El archivo de prompts '{PROMPTS_FILE}' definido en el config no existe.")
-        return
-    
-    try:
-        with open(PROMPTS_FILE, 'r', encoding='utf-8') as f:
-            prompts_globales = json.load(f)
-        print(f"Archivo de prompts globales '{PROMPTS_FILE}' cargado correctamente.")
-    except json.JSONDecodeError:
-        print(f"Error: El archivo de prompts '{PROMPTS_FILE}' no es un JSON válido.")
+    if not s3_config:
+        print("Error: Falta configuración de S3 en el config.yaml.")
         return
 
+    # 2. Configurar APIs y Modelos
     gestor = config.get("gestor")
-    api_key= None
+    api_key = None
+    api_endpoint = None
+    
+    # Mapeo de configuración según gestor
     if gestor == "ollama":
         api_endpoint = config.get("ollama_config", {}).get("endpoint")
     elif gestor == "lm_studio":
         api_endpoint = config.get("lm_studio_config", {}).get("endpoint")
     elif gestor == "vllm":
         api_endpoint = config.get("vllm_config", {}).get("endpoint")
-    elif gestor =='qwen3':
+    elif gestor == 'qwen3':
         api_endpoint = config.get("qwen_config", {}).get("endpoint")
     elif gestor == "openai":
-        api_endpoint = None
         api_key = config.get("openai_config", {}).get("api_key")
     elif gestor == "gemini":
-        api_endpoint = None
         api_key = config.get("gemini_config", {}).get("api_key")
-    elif gestor =="nova":
+    elif gestor == "nova":
         api_key = config.get("nova_config", {}).get("api_key")
-        api_endpoint = None
-    else:
-        print(f"Error: El gestor '{gestor}' no es válido. Opciones: 'ollama', 'lm_studio'.")
+
+    print(f"Usando gestor: '{gestor}' | Endpoint: {api_endpoint or 'N/A'}")
+    
+    # 3. Cargar Prompts Globales
+    prompts_file = config.get("prompts_file", "prompts.json")
+    try:
+        with open(prompts_file, 'r', encoding='utf-8') as f:
+            prompts_globales = json.load(f)
+        print(f"Prompts cargados desde {prompts_file}")
+    except Exception as e:
+        print(f"Error cargando prompts: {e}")
         return
 
-    if not api_endpoint and gestor not in ["openai", "gemini"]:
-        print(f"Error: No se encontró el 'endpoint' para el gestor '{gestor}' en el config.")
-        return
-        
-    print(f"Usando el gestor: '{gestor}' con el endpoint: '{api_endpoint}'")
-    
-    OUTPUT_FILE = config.get("output_file")
+    # ==========================================
+    # 4. INICIALIZACIÓN DEL RAG
+    # ==========================================
+    rag_pipeline = None
+    if RAG_AVAILABLE and config.get("rag_config", {}).get("enabled"):
+        try:
+            print("\n🔧 Inicializando Pipeline RAG (Assets Locales)...")
+            rag_pipeline = MultimodalRAGPipeline(config)
+            print("✅ RAG Inicializado correctamente.\n")
+        except Exception as e:
+            print(f"❌ Error crítico inicializando RAG: {e}")
+            print("➡️  Continuando ejecución SIN RAG.\n")
+            rag_pipeline = None
 
-    tareas_a_ejecutar = config.get("tareas_a_ejecutar", None)
-    if tareas_a_ejecutar is not None:
-        print(f"Se ejecutarán únicamente las siguientes tareas especificadas en el config: {tareas_a_ejecutar}")
-    else:
-        print("Advertencia: No se encontró la clave 'tareas_a_ejecutar'. Se ejecutarán todas las tareas encontradas en los archivos JSON.")
-
-    arbol_taxonomia = construir_arbol_taxonomia()
-    print(f"Ábol de taxonomía construido con {len(arbol_taxonomia.nodes())} nodos.")
-
-    
+    # Preparar estructuras
     modelo_a_evaluar = config.get("modelo_a_evaluar")
-    print(f"Evaluando el modelo '{modelo_a_evaluar}'...")
-    
     resultados_agregados_por_tarea = {}
     total_prompt_tokens = 0
     total_eval_tokens = 0
-    print(f"\n=======================================================")
-    print(f"==== ESCANEANDO IMÁGENES Y PROMPTS EN S3 BUCKET '{s3_config['input_bucket']}/{s3_config['input_prefix']}' ====")
-    print(f"=======================================================")
+    tareas_a_ejecutar = config.get("tareas_a_ejecutar", [])
+
+    print("Construyendo árbol de taxonomía...")
+    arbol_taxonomia = construir_arbol_taxonomia()
+
+    # 5. Bucle Principal de Imágenes
+    bucket = s3_config['input_bucket']
+    prefix = s3_config['input_prefix']
     
-    archivos_en_directorio = sorted(list(list_images_by_prefix(s3_config['input_bucket'], s3_config['input_prefix'])))
-    for image_key in archivos_en_directorio:
+    print(f"Escaneando imágenes en s3://{bucket}/{prefix} ...")
+    imagenes_s3 = list(list_images_by_prefix(bucket, prefix))
+    print(f"Se encontraron {len(imagenes_s3)} imágenes.")
+    
+    for image_key in imagenes_s3:
         filename = os.path.basename(image_key)
-        ground_truths_para_imagen = load_ground_truth(s3_config['input_bucket'], image_key)
-        if not ground_truths_para_imagen:
-            print(f"\nAdvertencia: Se encontró la imagen '{filename}' pero no su JSON. Saltando.")
-            continue
-            
-        print(f"\n--- Procesando imagen de S3: {filename} ---")
-        image_path = download_image_to_tmp(s3_config['input_bucket'], image_key)
-
-        imagen_b64_original = image_file_to_b64(image_path)
+        print(f"\n--- Procesando: {filename} ---")
         
-        if not imagen_b64_original:
-            print(f"No se pudo procesar la imagen '{filename}'. Saltando.")
-            os.remove(image_path) 
+        # A. Descargar Imagen y GT
+        try:
+            image_path = download_image_to_tmp(bucket, image_key)
+            ground_truths = load_ground_truth(bucket, image_key)
+        except Exception as e:
+            print(f"Error descargando datos de S3 para {filename}: {e}")
+            continue
+            
+        if not ground_truths:
+            print(f"Advertencia: No se encontró JSON de Ground Truth para {filename}. Saltando.")
+            if os.path.exists(image_path): os.remove(image_path)
             continue
 
-        for task_name, gt_info in ground_truths_para_imagen.items():
-            if tareas_a_ejecutar is not None and task_name not in tareas_a_ejecutar:
+        # B. Generar Contexto RAG
+        rag_context = ""
+        rag_used = False
+        if rag_pipeline:
+            try:
+                print("   🔍 Ejecutando análisis RAG...")
+                rag_context = rag_pipeline.run(image_path)
+                rag_used = True
+                print("   ✅ Contexto RAG generado.")
+            except Exception as e:
+                print(f"   ⚠️ Fallo en inferencia RAG: {e}")
+                rag_context = ""
+
+        # C. Procesar Tareas
+        imagen_b64 = image_file_to_b64(image_path)
+        if not imagen_b64:
+            print(f"Error al convertir imagen a Base64. Saltando.")
+            if os.path.exists(image_path): os.remove(image_path)
+            continue
+        
+        imagen_cv = None
+        if "PDS" in tareas_a_ejecutar:
+            imagen_cv = cv2.imread(image_path)
+
+        for task_name, gt_list in ground_truths.items():
+            if tareas_a_ejecutar and task_name not in tareas_a_ejecutar:
                 continue
-
-            prompts_para_tarea = prompts_globales[task_name]
-            if isinstance(gt_info, list) and gt_info:
-                ground_truth_para_tarea = gt_info[0].get('ground_truth')
-            else:
-                ground_truth_para_tarea = None
-
-            if ground_truth_para_tarea is None:
-                print(f"Advertencia: No se encontró la clave 'ground_truth' para la tarea '{task_name}' en '{filename}'. Saltando tarea.")
-                continue
-
-            resultados_agregados_por_tarea.setdefault(task_name, [])
-            
-            if task_name == "PDS":
-                imagen_cv_original = cv2.imread(image_path)
-                if imagen_cv_original is None:
-                    print(f"Error al leer la imagen '{filename}' con OpenCV para la tarea PDS. Saltando.")
-                    continue
                 
-                for i, item in enumerate(prompts_para_tarea):
-                    max_level = item.get("nivel", 0)
-                    if max_level == 0:
-                        print("Advertencia: item de PDS no tiene 'nivel'. Saltando.")
-                        continue
+            prompts_tarea = prompts_globales.get(task_name, [])
+            gt_data = gt_list[0].get('ground_truth') if gt_list else None
+            
+            resultados_agregados_por_tarea.setdefault(task_name, [])
+
+            # --- CASO 1: Tarea PDS ---
+            if task_name == "PDS" and imagen_cv is not None:
+                for i, p_item in enumerate(prompts_tarea):
+                    max_nivel = p_item.get("nivel", 3)
+                    prompt_base = p_item['prompt']
+                    
+                    # Inyección RAG
+                    prompt_final = prompt_base
+                    if rag_used and rag_context:
+                        prompt_final += f"\n\n### ADDITIONAL CONTEXT FROM SIMILAR CASES:\n{rag_context}"
+
+                    for nivel in range(1, max_nivel + 1):
+                        print(f"   -> PDS | Prompt {i+1} | Nivel {nivel}")
                         
-                    for nivel_actual in range(1, max_level + 1):
-                        print(f"  -> Tarea '{task_name}', Prompt {i+1}/{len(prompts_para_tarea)}, Nivel de distorsión {nivel_actual}/{max_level}")
+                        img_dist_b64 = aplicar_y_codificar_distorsiones(imagen_cv, nivel)
                         
-                        imagen_b64_distorsionada = aplicar_y_codificar_distorsiones(imagen_cv_original, nivel_actual)
-                        
-                        respuesta_data = consultar_modelo_vlm(
-                            prompt=item['prompt'], image_b64=imagen_b64_distorsionada, model_name=modelo_a_evaluar,
-                            temperature=config.get("hiperparametros", {}).get("temperature"),
-                            top_k=config.get("hiperparametros", {}).get("top_k"),
+                        start_t = time.perf_counter() # ✅ RESTAURADO: Medición de tiempo
+                        resp = consultar_modelo_vlm(
+                            prompt=prompt_final,
+                            image_b64=img_dist_b64,
+                            model_name=modelo_a_evaluar,
+                            temperature=config.get("hiperparametros", {}).get("temperature", 0),
+                            top_k=config.get("hiperparametros", {}).get("top_k", 50),
                             endpoint=api_endpoint,
                             gestor=gestor,
                             api_key=api_key
                         )
+                        end_t = time.perf_counter()
                         
-                        if respuesta_data:
-                            respuesta_modelo_raw = respuesta_data["response"]
-                            total_prompt_tokens += respuesta_data["prompt_tokens"]
-                            total_eval_tokens += respuesta_data["eval_tokens"]
-                        else:
-                            respuesta_modelo_raw = None
-                        respuesta_modelo_norm = normalizar_respuesta(respuesta_modelo_raw, ground_truth_para_tarea)
+                        texto_resp = resp["response"] if resp else None
+                        norm_resp = normalizar_respuesta(texto_resp, gt_data)
                         
-                        print(f"     GT: {ground_truth_para_tarea}")
-                        print(f"     Respuesta (Nivel {nivel_actual}): {respuesta_modelo_norm}")
+                        if resp:
+                            total_prompt_tokens += resp.get("prompt_tokens", 0)
+                            total_eval_tokens += resp.get("eval_tokens", 0)
 
-                        resultado_individual = {
+                        resultados_agregados_por_tarea[task_name].append({
                             "imagen": filename,
-                            "prompt": item['prompt'],
-                            "ground_truth": ground_truth_para_tarea,
-                            "respuesta_modelo": respuesta_modelo_raw,
-                            "respuesta_normalizada": respuesta_modelo_norm,
-                            "nivel": nivel_actual,
-                            "prompt_tokens": respuesta_data["prompt_tokens"] if respuesta_data else 0,
-                            "eval_tokens": respuesta_data["eval_tokens"] if respuesta_data else 0 
-                        }
-                        resultados_agregados_por_tarea[task_name].append(resultado_individual)
+                            "prompt": prompt_base,
+                            "ground_truth": gt_data,
+                            "respuesta_modelo": texto_resp,
+                            "respuesta_normalizada": norm_resp,
+                            "nivel": nivel,
+                            "tiempo_inferencia": end_t - start_t, # ✅ RESTAURADO: Guardado de tiempo
+                            "rag_used": rag_used,
+                            "rag_context_preview": rag_context[:100] + "..." if rag_used else None
+                        })
                         time.sleep(0.1)
-            
+
+            # --- CASO 2: Tareas Estándar ---
             else:
-                for i, item in enumerate(prompts_para_tarea):
-                    print(f"  -> Tarea '{task_name}', Prompt {i+1}/{len(prompts_para_tarea)}") 
+                for i, p_item in enumerate(prompts_tarea):
+                    print(f"   -> {task_name} | Prompt {i+1}")
+                    prompt_base = p_item['prompt']
                     
-                    start_time = time.perf_counter()
-                    respuesta_data = consultar_modelo_vlm(
-                        prompt=item['prompt'], image_b64=imagen_b64_original, model_name=modelo_a_evaluar,
-                        temperature=config.get("hiperparametros", {}).get("temperature"),
-                        top_k=config.get("hiperparametros", {}).get("top_k"),
+                    # Inyección RAG
+                    prompt_final = prompt_base
+                    if rag_used and rag_context:
+                        prompt_final += f"\n\n### ADDITIONAL CONTEXT FROM SIMILAR CASES:\n{rag_context}"
+
+                    start_t = time.perf_counter()
+                    resp = consultar_modelo_vlm(
+                        prompt=prompt_final,
+                        image_b64=imagen_b64,
+                        model_name=modelo_a_evaluar,
+                        temperature=config.get("hiperparametros", {}).get("temperature", 0),
+                        top_k=config.get("hiperparametros", {}).get("top_k", 50),
                         endpoint=api_endpoint,
-                        gestor=gestor, api_key=api_key
+                        gestor=gestor,
+                        api_key=api_key
                     )
-                    end_time = time.perf_counter()
-                    tiempo_inferencia = end_time - start_time
-                    print(f"     [DEBUG] Tiempo inferencia: {tiempo_inferencia:.4f}s")
-                    if respuesta_data:
-                        respuesta_modelo_raw = respuesta_data["response"]
-                        total_prompt_tokens += respuesta_data["prompt_tokens"]
-                        total_eval_tokens += respuesta_data["eval_tokens"]
-                    else:
-                        respuesta_modelo_raw = None
-                    respuesta_modelo_norm = normalizar_respuesta(respuesta_modelo_raw, ground_truth_para_tarea)
+                    end_t = time.perf_counter()
+
+                    texto_resp = resp["response"] if resp else None
+                    norm_resp = normalizar_respuesta(texto_resp, gt_data)
                     
+                    if resp:
+                        total_prompt_tokens += resp.get("prompt_tokens", 0)
+                        total_eval_tokens += resp.get("eval_tokens", 0)
 
-                    print(f"     GT: {ground_truth_para_tarea}")
-                    print(f"     Respuesta Multimodal: {respuesta_modelo_norm}")
-                    if respuesta_data:
-                        print(f"     Prompt Tokens: {respuesta_data['prompt_tokens']}")
-                        print(f"     Answer Tokens: {respuesta_data['eval_tokens']}")
-
-
-                    resultado_individual = {
+                    resultados_agregados_por_tarea[task_name].append({
                         "imagen": filename,
-                        "prompt": item['prompt'],
-                        "ground_truth": ground_truth_para_tarea,
-                        "respuesta_modelo": respuesta_modelo_raw,
-                        "respuesta_normalizada": respuesta_modelo_norm,
-                        "tiempo_inferencia": tiempo_inferencia,
-                        "prompt_tokens": respuesta_data["prompt_tokens"] if respuesta_data else 0,
-                        "eval_tokens": respuesta_data["eval_tokens"] if respuesta_data else 0,
-                    }
-                    resultados_agregados_por_tarea[task_name].append(resultado_individual)
-                    time.sleep(0.1) 
-        try:
-            os.remove(image_path)
-        except OSError as e:
-            print(f"Aviso: No se pudo eliminar el archivo temporal {image_path}: {e}")
+                        "prompt": prompt_base,
+                        "ground_truth": gt_data,
+                        "respuesta_modelo": texto_resp,
+                        "respuesta_normalizada": norm_resp,
+                        "tiempo_inferencia": end_t - start_t,
+                        "rag_used": rag_used,
+                        "rag_context_preview": rag_context[:100] + "..." if rag_used else None
+                    })
+                    print(f"      Respuesta: {norm_resp}")
+                    time.sleep(0.1)
 
-    print(f"\n\n=======================================================")
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+    # 6. Generación de Reportes y Subida a S3
+    print("\n\n=======================================================")
     print(f"====== CÁLCULO FINAL DE MÉTRICAS PARA TODAS LAS TAREAS ======")
     print(f"=======================================================")
     
     evaluacion_completa = {}
     
+    # ✅ RESTAURADO: Lógica de ordenación de tareas original
     task_order = ["hF1", "Hallucination", "PDS"] 
     processed_tasks = set(resultados_agregados_por_tarea.keys())
     
@@ -248,12 +277,18 @@ def main():
 
     for task_name in all_tasks_ordered:
         resultados_detallados = resultados_agregados_por_tarea[task_name]
-        #Metricas globales
+        
+        # Metricas globales
         metricas = despachar_calculo_metricas(task_name, resultados_detallados, arbol_taxonomia, metricas_base=evaluacion_completa)
+        
+        # ✅ RESTAURADO: Cálculo de tiempo medio de inferencia
         times = [r['tiempo_inferencia'] for r in resultados_detallados if 'tiempo_inferencia' in r]
         if times:
             metricas['tiempo_medio_inferencia_s'] = round(sum(times) / len(times), 2)
+            
         imprimir_resumen_consola(task_name, modelo_a_evaluar, metricas)
+        
+        # ✅ RESTAURADO: Desglose de métricas por prompt individual
         metricas_por_prompt = {}
         resultados_por_prompt = {}
         for resultado in resultados_detallados:
@@ -269,6 +304,7 @@ def main():
                 "prompt_text": prompt,
                 "metricas": metricas_prompt
             }
+            
         evaluacion_completa[task_name] = {
             "metricas": metricas,
             "metricas_por_prompt": metricas_por_prompt,
@@ -276,30 +312,28 @@ def main():
         }
 
     if not evaluacion_completa:
-        print("\nNo se procesó ninguna imagen con un JSON válido o ninguna tarea coincide con la configuración. No se generará ningún reporte.")
+        print("\nNo se procesó ninguna imagen válida o ninguna tarea.")
     else:
-        modelo_para_filename = modelo_a_evaluar.replace(":", "-")
-
-        nombre_base, extension = os.path.splitext(OUTPUT_FILE)
-        nombre_archivo_dinamico = f"{nombre_base}_{modelo_para_filename}{extension}"
-
-        # --- CAMBIO REALIZADO ---
-        # Usamos el prefijo definido en el config.yaml en lugar de "reportes/"
-        prefix = s3_config.get('output_prefix', 'reportes/') # Usa 'reportes/' solo si falla el config
-        ruta_salida_final = f"{prefix}{nombre_archivo_dinamico}" 
-        # ------------------------
-
+        # ✅ Mantenida la nomenclatura de salida con S3
+        output_filename = config.get("output_file", "resultados.json")
+        if config.get("rag_config", {}).get("enabled"):
+            base, ext = os.path.splitext(output_filename)
+            output_filename = f"{base}_RAG{ext}"
+            
+        prefix = s3_config.get('output_prefix', 'reportes/') 
+        ruta_salida_final = f"{prefix}{output_filename}"
+        
         reporte_final = generar_reporte_final(config, evaluacion_completa, total_prompt_tokens, total_eval_tokens)
         
         print(f"\nSubiendo resultados a S3 en 's3://{s3_config['output_bucket']}/{ruta_salida_final}'...")
-
         put_json_s3(s3_config['output_bucket'], ruta_salida_final, reporte_final)
         
-        print(f"Resultados de las tareas ejecutadas guardados en S3.")
+        print(f"Resultados guardados en S3.")
         print(f"\n--- RESUMEN DE TOKENS ---")
         print(f"Total tokens de entrada (prompt): {total_prompt_tokens}")
         print(f"Total tokens de salida (generados): {total_eval_tokens}")
         print(f"Total tokens: {total_prompt_tokens + total_eval_tokens}")
+        
     print("--- PROCESO DE EVALUACIÓN FINALIZADO ---")
 
 

@@ -6,16 +6,24 @@ x-common-volumes: &common-volumes
   - ./config.yaml:/app/config.yaml
   - ./taxonomia.json:/app/taxonomia.json
   - ./prompts.json:/app/prompts.json
+  - ./app_version.json:/app/app_version.json
   - ./reportes:/app/reportes
   - ./imagenes:/app/imagenes
+  - ./rag:/app/rag                   # Código fuente del módulo RAG
+  - ./assets:/app/assets             # Vocabulario SAM3 y otros recursos pesados
+  - ./vector_indices:/app/vector_indices # Índices FAISS y metadatos
+  - ./sam3:/app/sam3
 
 x-common-environment: &common-environment
   - PYTHONUNBUFFERED=1
   - NVIDIA_VISIBLE_DEVICES=all
   - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  # Variables de entorno para AWS (se tomarán del host o .env)
   - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
   - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
   - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+  # Asegura que Python pueda importar módulos desde la raíz /app
+  - PYTHONPATH=/app
 
 x-common-extra-hosts: &common-extra-hosts
   extra_hosts:
