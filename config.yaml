@@ -22,9 +22,9 @@ qwen_config:
   endpoint: http://host.docker.internal:8001/qwen3/chat/completions
 s3_config:
   input_bucket: vda-benchmark-datasets-colombia-peru-espana
-  input_prefix: prueba/
+  input_prefix: datos_españa_carros_masked/
   output_bucket: vda-benchmark-datasets-colombia-peru-espana
-  output_prefix: reportes_dataset_prueba_2/
+  output_prefix: reportes_datos_españa_carros_masked/
 tareas_a_ejecutar:
 - Hallucination
 vllm_config:

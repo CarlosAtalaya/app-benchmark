@@ -4,6 +4,7 @@ import json
 import time
 import sys
 import cv2 
+import boto3 # Necesario para descargar el resumen antes del bucle
 
 # --- Importaciones del proyecto original ---
 from utils import (
@@ -37,7 +38,7 @@ except ImportError as e:
 CONFIG_FILE = "config.yaml"
 
 def main():
-    print("--- INICIANDO PROCESO DE EVALUACIÓN CON RAG MULTIMODAL ---")
+    print("--- INICIANDO PROCESO DE EVALUACIÓN CON RAG MULTIMODAL (MODE MASKED) ---")
     
     # 1. Cargar Configuración
     config = cargar_configuracion(CONFIG_FILE)
@@ -84,13 +85,38 @@ def main():
         return
 
     # ==========================================
+    # NUEVO: CARGAR RESUMEN DE POLÍGONOS
+    # ==========================================
+    polygons_summary = {}
+    if RAG_AVAILABLE and config.get("rag_config", {}).get("enabled"):
+        print("\n📥 Descargando metadatos de segmentación (polígonos)...")
+        try:
+            s3_client_temp = boto3.client('s3')
+            summary_key = os.path.join(s3_config['input_prefix'], "dataset_polygons_summary.json")
+            local_summary_path = "/tmp/dataset_polygons_summary.json"
+            
+            s3_client_temp.download_file(s3_config['input_bucket'], summary_key, local_summary_path)
+            
+            with open(local_summary_path, 'r', encoding='utf-8') as f:
+                polygons_summary = json.load(f)
+            print(f"✅ Metadatos cargados: {len(polygons_summary)} registros encontrados.")
+            
+        except Exception as e:
+            print(f"⚠️  No se pudo cargar 'dataset_polygons_summary.json' desde S3.")
+            print(f"   Detalle: {e}")
+            print("   ➡️ El RAG usará la imagen completa como fallback (bbox 0,0,w,h).")
+            polygons_summary = {}
+
+
+    # ==========================================
     # 4. INICIALIZACIÓN DEL RAG
     # ==========================================
     rag_pipeline = None
     if RAG_AVAILABLE and config.get("rag_config", {}).get("enabled"):
         try:
-            print("\n🔧 Inicializando Pipeline RAG (Assets Locales)...")
-            rag_pipeline = MultimodalRAGPipeline(config)
+            print("\n🔧 Inicializando Pipeline RAG (Assets Locales + Metadatos)...")
+            # AHORA PASAMOS EL DICCIONARIO DE POLÍGONOS
+            rag_pipeline = MultimodalRAGPipeline(config, polygons_summary)
             print("✅ RAG Inicializado correctamente.\n")
         except Exception as e:
             print(f"❌ Error crítico inicializando RAG: {e}")
@@ -113,10 +139,15 @@ def main():
     
     print(f"Escaneando imágenes en s3://{bucket}/{prefix} ...")
     imagenes_s3 = list(list_images_by_prefix(bucket, prefix))
-    print(f"Se encontraron {len(imagenes_s3)} imágenes.")
+    print(f"Se encontraron {len(imagenes_s3)} archivos.")
     
     for image_key in imagenes_s3:
         filename = os.path.basename(image_key)
+        
+        # --- FILTRO IMPORTANTE: IGNORAR EL JSON DE RESUMEN ---
+        if filename == "dataset_polygons_summary.json":
+            continue
+
         print(f"\n--- Procesando: {filename} ---")
         
         # A. Descargar Imagen y GT
@@ -137,7 +168,8 @@ def main():
         rag_used = False
         if rag_pipeline:
             try:
-                print("   🔍 Ejecutando análisis RAG...")
+                print("   🔍 Ejecutando análisis RAG (Offline SAM)...")
+                # El pipeline internamente buscará 'filename' en 'polygons_summary'
                 rag_context = rag_pipeline.run(image_path)
                 rag_used = True
                 print("   ✅ Contexto RAG generado.")
@@ -181,7 +213,7 @@ def main():
                         
                         img_dist_b64 = aplicar_y_codificar_distorsiones(imagen_cv, nivel)
                         
-                        start_t = time.perf_counter() # ✅ RESTAURADO: Medición de tiempo
+                        start_t = time.perf_counter() 
                         resp = consultar_modelo_vlm(
                             prompt=prompt_final,
                             image_b64=img_dist_b64,
@@ -208,7 +240,7 @@ def main():
                             "respuesta_modelo": texto_resp,
                             "respuesta_normalizada": norm_resp,
                             "nivel": nivel,
-                            "tiempo_inferencia": end_t - start_t, # ✅ RESTAURADO: Guardado de tiempo
+                            "tiempo_inferencia": end_t - start_t,
                             "rag_used": rag_used,
                             "rag_context_preview": rag_context[:100] + "..." if rag_used else None
                         })
@@ -268,7 +300,6 @@ def main():
     
     evaluacion_completa = {}
     
-    # ✅ RESTAURADO: Lógica de ordenación de tareas original
     task_order = ["hF1", "Hallucination", "PDS"] 
     processed_tasks = set(resultados_agregados_por_tarea.keys())
     
@@ -281,14 +312,14 @@ def main():
         # Metricas globales
         metricas = despachar_calculo_metricas(task_name, resultados_detallados, arbol_taxonomia, metricas_base=evaluacion_completa)
         
-        # ✅ RESTAURADO: Cálculo de tiempo medio de inferencia
+        # Tiempo medio
         times = [r['tiempo_inferencia'] for r in resultados_detallados if 'tiempo_inferencia' in r]
         if times:
             metricas['tiempo_medio_inferencia_s'] = round(sum(times) / len(times), 2)
             
         imprimir_resumen_consola(task_name, modelo_a_evaluar, metricas)
         
-        # ✅ RESTAURADO: Desglose de métricas por prompt individual
+        # Desglose por prompt
         metricas_por_prompt = {}
         resultados_por_prompt = {}
         for resultado in resultados_detallados:
@@ -314,7 +345,6 @@ def main():
     if not evaluacion_completa:
         print("\nNo se procesó ninguna imagen válida o ninguna tarea.")
     else:
-        # ✅ Mantenida la nomenclatura de salida con S3
         output_filename = config.get("output_file", "resultados.json")
         if config.get("rag_config", {}).get("enabled"):
             base, ext = os.path.splitext(output_filename)

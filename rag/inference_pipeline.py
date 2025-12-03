@@ -1,139 +1,115 @@
-# inference_pipeline.py
+# rag/inference_pipeline.py
 import os
-import numpy as np
-from PIL import Image
-from collections import Counter
-from typing import Dict, List, Optional
 import time
+from PIL import Image
+from typing import Dict, List, Optional
+from pathlib import Path
+from collections import Counter  # <--- SOLUCIÓN AL ERROR
 
-# Imports relativos (asumiendo estructura de paquete)
-from .sam3_wrapper import SAM3Segmenter
+# Imports relativos
 from .grid_crop_generator import GridCropGenerator
 from .metaclip_embedder import MetaCLIPEmbedder
 from .retriever import DamageRAGRetriever
 
 class MultimodalRAGPipeline:
     """
-    Pipeline End-to-End para RAG de Alta Resolución.
-    Flujo: Imagen -> SAM3 -> Grid Crops -> MetaCLIP -> FAISS -> Contexto Agregado.
+    Pipeline OPTIMIZADO para RAG sobre imágenes pre-procesadas (Offline SAM).
+    Flujo: Imagen Enmascarada + JSON Metadatos -> Grid Crops -> MetaCLIP -> FAISS -> Contexto.
     """
     
-    def __init__(self, config: Dict):
-        print("\n🚀 [Pipeline] Inicializando Multimodal RAG Pipeline...")
+    def __init__(self, config: Dict, polygons_summary: Dict):
+        print("\n🚀 [Pipeline] Inicializando Multimodal RAG Pipeline (Modo Offline SAM)...")
         self.config = config
+        self.polygons_data = polygons_summary # Diccionario cargado del dataset_polygons_summary.json
+        
         rag_conf = config.get("rag_config", {})
         
-        # 1. Segmentador (Pesado, carga en GPU)
-        # Pasamos la config específica si existe
-        self.sam3 = SAM3Segmenter(config.get("sam3_config", {}))
-        
-        # 2. Generador de Grid
+        # 1. Generador de Grid
         self.grid_generator = GridCropGenerator(
-            crop_size=336,  # Sincronizado con MetaCLIP
+            crop_size=336,
             overlap=0.25,
             min_content_ratio=0.30
         )
         
-        # 3. Motor de Embeddings
+        # 2. Motor de Embeddings
         self.embedder = MetaCLIPEmbedder(verbose=True)
         
-        # 4. Base de Datos Vectorial (MODIFICADO)
-        rag_conf = config.get("rag_config", {})
+        # 3. Base de Datos Vectorial
         base_path = rag_conf.get("index_path", "")
-        
-        # Construimos las rutas completas uniendo la carpeta + el nombre del fichero
         index_path = os.path.join(base_path, rag_conf.get("index_filename", ""))
         meta_path = os.path.join(base_path, rag_conf.get("metadata_filename", ""))
-        conf_path = os.path.join(base_path, rag_conf.get("config_filename", "")) # <--- NUEVO
+        conf_path = os.path.join(base_path, rag_conf.get("config_filename", ""))
         
-        # Le pasamos el config_path al Retriever
-        from pathlib import Path
         self.retriever = DamageRAGRetriever(
             Path(index_path), 
             Path(meta_path), 
             config_path=Path(conf_path) if os.path.exists(conf_path) else None
         )
         
-        # Hiperparámetros de Inferencia
         self.top_k_crop = rag_conf.get("top_k_per_crop", 3)
-        self.similarity_threshold = rag_conf.get("similarity_threshold", 0.65) # 0.65 es un buen punto de corte para CLIP/MetaCLIP
+        self.similarity_threshold = rag_conf.get("similarity_threshold", 0.60)
         
-        print("✅ [Pipeline] Sistema listo para inferencia.\n")
+        print("✅ [Pipeline] Sistema listo para inferencia sobre dataset enmascarado.\n")
 
     def run(self, image_path: str) -> str:
         """
-        Ejecuta el análisis completo sobre una imagen.
-        Retorna: Un string de contexto listo para inyectar en el prompt del VLM.
+        Ejecuta el análisis usando la imagen ya enmascarada y sus metadatos pre-calculados.
         """
         start_t = time.time()
         filename = os.path.basename(image_path)
-        print(f"📸 [Pipeline] Procesando: {filename}")
-
-        # PASO A: Segmentación (Aislar el coche)
-        # sam3.process_image devuelve (PIL.Image, bbox_list)
-        masked_image, bbox = self.sam3.process_image(image_path)
         
-        if masked_image is None:
-            print("   ⚠️ Fallo en segmentación SAM3. Usando imagen completa como fallback.")
+        print(f"📸 [Pipeline] Procesando RAG para: {filename}")
+
+        # PASO A: Recuperar Geometría (BBox) del JSON Pre-calculado
+        img_metadata = self.polygons_data.get(filename)
+        
+        bbox = None
+        if img_metadata:
+            bbox = img_metadata.get("bbox") # Esperamos [x, y, w, h]
+        
+        if not bbox:
+            print(f"   ⚠️ ADVERTENCIA: No hay bbox para {filename}. Usando imagen completa.")
+            with Image.open(image_path) as img:
+                w, h = img.size
+                bbox = [0, 0, w, h]
+
+        # Cargar la imagen (que ya es la masked desde la carpeta _masked)
+        try:
             masked_image = Image.open(image_path).convert("RGB")
-
-            bbox = [0, 0, masked_image.width, masked_image.height]
-
-        # ✨ OPTIMIZACIÓN DE MEMORIA: Descargar SAM3 inmediatamente
-        self.sam3.unload_model()
+        except Exception as e:
+            print(f"   ❌ Error abriendo imagen {filename}: {e}")
+            return ""
 
         # PASO B: Tiling (Grid Crops)
-        # grid_generator espera PIL y bbox
         crops = self.grid_generator.generate(masked_image, bbox)
         print(f"   🧩 Crops generados: {len(crops)}")
 
         if not crops:
             return "Note: Unable to extract valid visual segments from the image."
 
-        # PASO C: Retrieval Loop (Embedding + Búsqueda por Crop)
+        # PASO C: Retrieval Loop (Embedding + Búsqueda)
         all_findings = []
-        
-        # ✨ Cargar MetaCLIP solo ahora
         self.embedder.load_model()
         
         try:
             for i, crop_data in enumerate(crops):
-                # crop_data es dict: {'crop_array': np, 'bbox': ...}
                 crop_pil = Image.fromarray(crop_data['crop_array'])
-                
-                # Generar embedding (Prompt neutro automático)
                 emb_vector = self.embedder.generate_embedding(crop_pil)
-                
-                # Buscar vecinos
                 results = self.retriever.search(emb_vector, k=self.top_k_crop)
-                
-                # Filtrar ruido (Solo nos quedamos con matches de alta confianza)
-                # result['distance'] en FAISS HNSW InnerProduct suele ser similitud coseno (mayor es mejor)
-                # Si tu índice es L2, menor es mejor. 
-                # MetaCLIPEmbedder normaliza -> Producto Punto = Coseno. Rango [-1, 1].
-                # Asumiremos similaridad coseno donde > 0.6 es relevante.
                 
                 relevant_results = []
                 for r in results:
-                    score = r.distance
-                    # Ajusta esta lógica según si tu FAISS devuelve distancia L2 o Inner Product
-                    # Si usaste IndexHNSWFlat con MetricInnerProduct, score es Coseno.
-                    if score > self.similarity_threshold:
+                    if r.distance > self.similarity_threshold:
                         relevant_results.append(r)
                 
                 all_findings.extend(relevant_results)
         finally:
-            # ✨ Descargar MetaCLIP inmediatamente después de usarlo
             self.embedder.unload_model()
 
-        print(f"   🔍 Hallazgos relevantes totales: {len(all_findings)} (filtrados por umbral {self.similarity_threshold})")
-
-        # PASO D: Agregación de Contexto (Contextualizer)
+        # PASO D: Agregación
         final_context = self._aggregate_findings(all_findings, len(crops))
         
-        total_time = time.time() - start_t
-        print(f"   ✅ Pipeline finalizado en {total_time:.2f}s")
-        
+        print(f"   ✅ Contexto generado en {time.time() - start_t:.2f}s")
         return final_context
 
     def _aggregate_findings(self, findings: List[Dict], total_crops: int) -> str:
@@ -149,11 +125,10 @@ class MultimodalRAGPipeline:
 
         # 1. Estadísticas Globales
         damage_hits = [f for f in findings if f.has_damage]
-        clean_hits = [f for f in findings if not f.has_damage]
         
         damage_ratio = len(damage_hits) / len(findings)
         
-        # 2. Identificar Zonas y Tipos
+        # 2. Identificar Zonas y Tipos (Usando Counter importado)
         detected_zones = Counter([f.zone_description for f in damage_hits])
         detected_types = Counter([f.damage_type for f in damage_hits])
         
@@ -176,7 +151,6 @@ class MultimodalRAGPipeline:
             lines.append("The visual texture is consistent with undamaged vehicle panels.")
 
         # 4. Ejemplos de Referencia (Evidence)
-        # Tomar los 3 mejores matches absolutos para dar "grounding" al VLM
         best_matches = sorted(findings, key=lambda x: x.distance, reverse=True)[:3]
         
         if best_matches:
