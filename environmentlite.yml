@@ -1,10 +1,24 @@
 name: mapfre
 channels:
+  - pytorch          # Necesario para paquetes de PyTorch/CUDA
+  - nvidia           # Necesario para faiss-gpu
   - defaults
   - https://repo.anaconda.com/pkgs/main
   - https://repo.anaconda.com/pkgs/r
   - https://repo.anaconda.com/pkgs/msys2
 dependencies:
+  # Python Base
+  - python=3.10.18
+  - pip=25.2
+  
+  # Dependencias de GPU (RAG)
+  - pytorch-cuda=12.1
+  - pytorch
+  - torchvision
+  - torchaudio
+  - faiss-gpu
+  
+  # Dependencias originales del entorno lite (Aseguradas en la versión 3.10)
   - anyio=4.7.0
   - argon2-cffi=21.3.0
   - argon2-cffi-bindings=25.1.0
@@ -66,7 +80,6 @@ dependencies:
   - pandocfilters=1.5.1
   - parso=0.8.4
   - pillow=11.1.0
-  - pip=25.2
   - platformdirs=4.3.7
   - prometheus_client=0.21.1
   - prompt-toolkit=3.0.43
@@ -75,7 +88,6 @@ dependencies:
   - pycparser=2.23
   - pygments=2.19.1
   - pysocks=1.7.1
-  - python=3.10.18
   - python-dateutil=2.9.0post0
   - python-fastjsonschema=2.20.0
   - python-json-logger=3.2.1
@@ -115,16 +127,21 @@ dependencies:
   - zeromq=4.3.5
   - zlib=1.3.1
   - zstd=1.5.6
-  - pytorch
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=12.1  # O la versión compatible con tu driver NVIDIA
-  - faiss-gpu          # Necesario para el retriever
-  - transformers       # Necesario para MetaCLIP
+  
+  # Dependencias PIP (RAG, ML, etc.)
   - pip:
+      - transformers
+      - timm
+      - decord
       - opencv-python-headless
-      - decord           # Dependencia oculta de SAM3
-      - timm             # Dependencia de modelos visuales
+      - streamlit
+      - watchdog
+      - google-generativeai
+      - openai
+      - perplexityai
+      # Instalación directa de SAM3 desde GitHub (Necesario para el Wrapper)
+      - git+https://github.com/facebookresearch/segment-anything-2.git
+      # Resto de dependencias de tu proyecto
       - aiohappyeyeballs==2.6.1
       - aiohttp==3.13.1
       - aiosignal==1.4.0
@@ -180,13 +197,11 @@ dependencies:
       - narwhals==2.6.0
       - networkx==3.4.2
       - ninja==1.13.0
-      - numpy==2.2.6
+      - numpy==1.26.4
       - openai==2.6.0
       - openai-harmony==0.0.4
-      - opencv-python-headless==4.12.0.88
       - outlines-core==0.2.11
       - partial-json-parser==0.2.1.1.post6
-      - perplexityai
       - propcache==0.4.1
       - proto-plus==1.26.1
       - protobuf==5.29.5
@@ -209,18 +224,15 @@ dependencies:
       - safetensors==0.6.2
       - scipy==1.15.3
       - setproctitle==1.3.7
-      - streamlit==1.50.0
       - sympy==1.14.0
       - tenacity==9.1.2
       - toml==0.10.2
       - torch==2.8.0
       - tqdm==4.67.1
-      - transformers==4.57.1
       - typing-inspection==0.4.2
       - uritemplate==4.2.0
       - uvicorn==0.20.0
       - vllm==0.11.0
-      - watchdog==6.0.0
       - watchfiles==1.1.1
       - websockets==15.0.1
       - yarl==1.22.0

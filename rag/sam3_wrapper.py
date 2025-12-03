@@ -10,7 +10,7 @@ from typing import Tuple, Optional, List, Any
 # Gestión robusta de imports
 try:
     import sam3
-    from sam3.sam3 import build_sam3_image_model
+    from sam3.model_builder import build_sam3_image_model
     from sam3.train.data.collator import collate_fn_api as collate
     from sam3.model.utils.misc import copy_data_to_device
     from sam3.train.data.sam3_image_dataset import InferenceMetadata, FindQueryLoaded, Image as SAMImage, Datapoint

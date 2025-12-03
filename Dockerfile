@@ -10,16 +10,28 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY environmentlite.yml .
-RUN conda env create -f environmentlite.yml && conda clean -afy
 
-# --- AGREGAR ESTA LÍNEA AQUÍ ---
-# Aseguramos que el sistema encuentre las librerías C++ del entorno conda mapfre (incluyendo MKL)
-ENV LD_LIBRARY_PATH /opt/conda/envs/mapfre/lib:$LD_LIBRARY_PATH
+# Capa pesada (YA CACHEADA, no se repetirá)
+RUN conda env create -f environmentlite.yml \
+    && conda run -n mapfre pip cache purge \
+    && conda clean -afy \
+    && rm -rf /root/.cache/pip
+
+# Fix de librerías (YA CACHEADO)
+RUN echo "/opt/conda/envs/mapfre/lib" > /etc/ld.so.conf.d/conda.conf && ldconfig
+RUN cd /opt/conda/envs/mapfre/lib && \
+    ln -sf libmkl_intel_lp64.so libmkl_intel_lp64.so.1 && \
+    ln -sf libmkl_gnu_thread.so libmkl_gnu_thread.so.1 && \
+    ln -sf libmkl_core.so libmkl_core.so.1
+
+# --- NUEVO: INSTALACIÓN RÁPIDA DE PYCOCOTOOLS ---
+# Lo hacemos aquí para no invalidar la caché de las capas anteriores
+# -----------------------------------------------
+RUN conda run -n mapfre pip install pycocotools ftfy regex
 
 SHELL ["conda", "run", "-n", "mapfre", "/bin/bash", "-c"]
 
 COPY . .
-ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "mapfre"]
 
-CMD ["python", "main.py"] 
-# Nota: He cambiado script_principal.py por main.py ya que es el archivo que subiste.
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "mapfre"]
+CMD ["python", "main.py"]

@@ -1,5 +1,3 @@
-version: '3.8'
-
 # --- CONFIGURACIONES COMUNES ---
 
 x-common-volumes: &common-volumes
@@ -23,7 +21,9 @@ x-common-environment: &common-environment
   - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
   - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
   # Asegura que Python pueda importar módulos desde la raíz /app
-  - PYTHONPATH=/app
+  - PYTHONPATH=/app:/app/rag
+  - HF_TOKEN=${HF_TOKEN}
+  - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 x-common-extra-hosts: &common-extra-hosts
   extra_hosts:
