@@ -22,7 +22,7 @@ qwen_config:
   endpoint: http://host.docker.internal:8001/qwen3/chat/completions
 s3_config:
   input_bucket: vda-benchmark-datasets-colombia-peru-espana
-  input_prefix: dataset_prueba_2/
+  input_prefix: prueba/
   output_bucket: vda-benchmark-datasets-colombia-peru-espana
   output_prefix: reportes_dataset_prueba_2/
 tareas_a_ejecutar:
